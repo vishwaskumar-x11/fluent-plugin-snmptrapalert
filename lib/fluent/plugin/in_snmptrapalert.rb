@@ -42,6 +42,13 @@ module Fluent
                 # SMI module names ["SMI-APPLIANCE"]
                 config_param :import_module_names, :array, :default => [], value_type: :string
 
+                # SNMPv3 parameters
+                config_param :security_name, :string, :default => nil
+                config_param :auth_protocol, :string, :default => nil
+                config_param :auth_password, :string, :default => nil, secret: true
+                config_param :priv_protocol, :string, :default => nil
+                config_param :priv_password, :string, :default => nil, secret: true
+
                 #define router method
                 unless method_defined?(:router)
                     define_method(:router) { Engine }
@@ -64,7 +71,26 @@ module Fluent
                 #Start Listening to SNMP Traps
                 def start
                     super
-                    @manager = SNMP::Manager.new(:host => @host, :port => @port)
+                    # @manager = SNMP::Manager.new(:host => @host, :port => @port)
+                    manager_options = { host: @host, port: @port }
+
+                    if @security_name
+                        manager_options[:security_name] = @security_name
+                        if @auth_protocol && @auth_password
+                            manager_options.merge!({
+                            auth_protocol: @auth_protocol,
+                            auth_password: @auth_password
+                            })
+                        end
+                        if @priv_protocol && @priv_password
+                            manager_options.merge!({
+                            priv_protocol: @priv_protocol,
+                            priv_password: @priv_password
+                            })
+                        end
+                    end
+                    
+                    @manager = SNMP::Manager.new(manager_options)
                     if SNMP::MIB.import_supported?
                         list = SNMP::MIB.list_imported()
 
@@ -88,7 +114,7 @@ module Fluent
                             trap_events = Hash.new
                             tag = @tag
                             timestamp = Engine.now
-                            raise("Unknown Trap Format", trap) unless trap.kind_of?(SNMP::SNMPv1_Trap) or trap.kind_of?(SNMP::SNMPv2_Trap)
+                            raise("Unknown Trap Format", trap) unless trap.kind_of?(SNMP::SNMPv1_Trap) or trap.kind_of?(SNMP::SNMPv2_Trap) or trap.kind_of?(SNMP::SNMPv3_Trap)
                             trap.each_varbind do |vb|
                                 trap_events[vb.name.to_s] = vb.value.to_s
                             end
@@ -98,6 +124,12 @@ module Fluent
                                 trap_events['enterprise'] = trap.enterprise
                                 trap_events['generic_trap'] = trap.generic_trap
                                 trap_events['agent_addr'] = trap.agent_addr.to_s
+                            elsif trap.kind_of?(SNMP::SNMPv3_Trap)
+                                if @security_name
+                                  trap_events['security_name'] = @security_name
+                                  trap_events['auth_protocol'] = @auth_protocol
+                                  trap_events['priv_protocol'] = @priv_protocol
+                                end
                             end
                             if @trap_format == 'tojson'
                                require 'json'

@@ -11,6 +11,17 @@ class SnmptrapalertInputTest < Test::Unit::TestCase
         port 1620
         tag SNMPTrap.Alert
     ]
+    
+    SNMP_CONFIG_V3 = %[
+        host 0.0.0.0
+        port 1620
+        tag SNMPTrap.Alert
+        security_name username
+        auth_password password
+        auth_protocol SHA
+        priv_password priv_password
+        priv_protocol AES256
+    ]
 
     def create_driver(conf=SNMP_CONFIG)
         Fluent::Test::Driver::Input.new(Fluent::Plugin::SnmpTrapAlert).configure(conf)
@@ -32,6 +43,17 @@ class SnmptrapalertInputTest < Test::Unit::TestCase
         SNMP::Manager.open(:Host => "127.0.0.1", :TrapPort => 1620, :Version => :SNMPv2c) do |snmp|
             snmp.trap_v2(
             400, # Fake system up time of 4 seconds
+            "1.3.6.1.4.1.10300.1.1.1.12",
+            [SNMP::VarBind.new("1.3.6.1.2.3.4", SNMP::Integer.new(1))])
+        end
+    end
+
+    def send_trap_v3()
+        SNMP::Manager.open(:Host => "127.0.0.1", :TrapPort => 1620, :Version => :SNMPv3,
+                           :SecurityName => "username", :AuthPassword => "password",
+                           :AuthProtocol => :SHA, :PrivPassword => "priv_password",
+                           :PrivProtocol => :AES256) do |snmp|
+            snmp.trap_v3(
             "1.3.6.1.4.1.10300.1.1.1.12",
             [SNMP::VarBind.new("1.3.6.1.2.3.4", SNMP::Integer.new(1))])
         end
@@ -103,6 +125,40 @@ class SnmptrapalertInputTest < Test::Unit::TestCase
         driver = create_driver(SNMP_CONFIG)
         driver.run(expect_emits: 1, timeout: 5) do
             send_trap_v2()
+        end
+
+        assert_equal(driver.events.length(), 1)
+        driver.events.each do |tag, timestamp, trap_events|
+            assert_equal 'SNMPTrap.Alert', tag
+            assert_true timestamp.is_a?(Fluent::EventTime)
+            message = trap_events.to_s
+            message = message.delete('\\"')
+            assert_match(/(?:(SNMPv2-(\w+)(::)(\w+)((\.)(\d+)){1,13}(=>))|(host=>))/, message)
+
+            trap_events.each do |key, value|
+                assert_match(/(?:(SNMPv2-(\w+)(::)(\w+)((\.)(\d+)){1,13})|(host))/, key.to_s, "Unknown OID format")
+            end
+        end
+    end
+
+    test 'emit_v3' do
+        driver = create_driver(SNMP_CONFIG_V3)
+        driver.run(expect_emits: 1, timeout: 5) do
+            send_trap_v3()
+        end
+
+        assert_equal(driver.events.length(), 1)
+        driver.events.each do |tag, timestamp, trap_events|
+            assert_equal("SNMPTrap.Alert", tag)
+            assert_true(timestamp.is_a?(Fluent::EventTime))
+            assert_equal(trap_events, {"SNMPv2-SMI::mgmt.3.4" => "1","enterprise" => [1,3,6,1,4,1,10300,1,1,1,12],"generic_trap" => :enterpriseSpecific,"host" => "127.0.0.1","specific_trap" => 0,"agent_addr" => "172.0.0.1"})
+        end
+    end
+
+    test 'emit_mib_v3' do
+        driver = create_driver(SNMP_CONFIG_V3)
+        driver.run(expect_emits: 1, timeout: 5) do
+            send_trap_v3()
         end
 
         assert_equal(driver.events.length(), 1)
